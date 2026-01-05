@@ -40,7 +40,7 @@ def get_ticket_stats() -> Dict[str, Any]:
         conn.close()
         return stats
     except Exception as e:
-        print(f"✗ Error getting stats: {e}")
+        print(f"Error getting stats: {e}")
         return {}
 
 
@@ -51,7 +51,7 @@ def get_tickets_by_status(status: str) -> List[Dict]:
         tickets = get_all_tickets(status=status)
         return [t.to_dict() for t in tickets]
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"Error: {e}")
         return []
 
 
@@ -62,7 +62,7 @@ def get_tickets_by_priority(priority: str) -> List[Dict]:
         tickets = get_all_tickets(priority=priority)
         return [t.to_dict() for t in tickets]
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"Error: {e}")
         return []
 
 
@@ -73,7 +73,7 @@ def get_tickets_by_assignee(email: str) -> List[Dict]:
         tickets = get_all_tickets(assigned_to=email)
         return [t.to_dict() for t in tickets]
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"Error: {e}")
         return []
 
 
@@ -97,7 +97,7 @@ def get_tickets_created_today() -> int:
         conn.close()
         return count
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"Error: {e}")
         return 0
 
 
@@ -128,7 +128,7 @@ def get_tickets_by_date_range(start_date: str, end_date: str) -> List[Dict]:
         
         return tickets
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"Error: {e}")
         return []
 
 
@@ -160,7 +160,7 @@ def get_average_resolution_time() -> float:
         avg_hours = total_hours / len(rows)
         return round(avg_hours, 2)
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"Error: {e}")
         return 0.0
 
 
@@ -214,7 +214,7 @@ def get_staff_performance() -> List[Dict[str, Any]]:
         
         return performance
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"Error: {e}")
         return []
 
 
@@ -246,7 +246,7 @@ def get_ticket_trends(days: int = 7) -> Dict[str, int]:
         conn.close()
         return dict(sorted(trends.items()))
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"Error: {e}")
         return {}
 
 
@@ -271,7 +271,7 @@ def get_priority_distribution() -> Dict[str, Dict[str, int]]:
         
         return dict(distribution)
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"Error: {e}")
         return {}
 
 
@@ -356,9 +356,9 @@ def export_report_to_text(filename: str = "ticket_report.txt"):
             for date, count in trends.items():
                 f.write(f"{date}: {count} tickets\n")
         
-        print(f"✓ Report exported to {filename}")
+        print(f"Report exported to {filename}")
     except Exception as e:
-        print(f"✗ Error exporting report: {e}")
+        print(f"Error exporting report: {e}")
 
 
 def search_tickets(keyword: str) -> List[Dict]:
@@ -386,8 +386,8 @@ def search_tickets(keyword: str) -> List[Dict]:
             )
             tickets.append(ticket.to_dict())
         
-        print(f"✓ Found {len(tickets)} tickets matching '{keyword}'")
+        print(f"Found {len(tickets)} tickets matching '{keyword}'")
         return tickets
     except Exception as e:
-        print(f"✗ Error searching: {e}")
+        print(f"Error searching: {e}")
         return []
