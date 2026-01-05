@@ -9,7 +9,7 @@ def get_staff_workload() -> Dict[str, int]:
         conn = sqlite3.connect(DATABASE_NAME)
         cursor = conn.cursor()
         
-        # Count active (non-closed) tickets per helper
+ 
         cursor.execute("""
             SELECT assigned_to, COUNT(*) as count
             FROM tickets
@@ -21,7 +21,7 @@ def get_staff_workload() -> Dict[str, int]:
         for row in cursor.fetchall():
             workload[row[0]] = row[1]
         
-        # Add helpers with zero tickets
+
         cursor.execute("SELECT email FROM users WHERE role = 'helper' AND is_active = 1")
         for (email,) in cursor.fetchall():
             if email not in workload:
@@ -30,7 +30,7 @@ def get_staff_workload() -> Dict[str, int]:
         conn.close()
         return workload
     except Exception as e:
-        print(f"✗ Error getting workload: {e}")
+        print(f"Error getting workload: {e}")
         return {}
 
 
@@ -40,7 +40,7 @@ def get_available_staff() -> List[Dict]:
         conn = sqlite3.connect(DATABASE_NAME)
         cursor = conn.cursor()
         
-        # Get all active helpers
+
         cursor.execute("""
             SELECT email, name, role
             FROM users
@@ -53,7 +53,7 @@ def get_available_staff() -> List[Dict]:
         for row in cursor.fetchall():
             email, name, role = row
             current_tickets = workload.get(email, 0)
-            max_tickets = 20  # Default max
+            max_tickets = 20 
             
             staff_list.append({
                 "email": email,
@@ -71,7 +71,7 @@ def get_available_staff() -> List[Dict]:
         
         return staff_list
     except Exception as e:
-        print(f"✗ Error getting available staff: {e}")
+        print(f" Error getting available staff: {e}")
         return []
 
 
@@ -89,9 +89,9 @@ def get_allocation_report():
         print("="*60)
         
         for staff in staff_list:
-            bar = "█" * staff['current_tickets']
+            bar = "||" * staff['current_tickets']
             capacity = f"{staff['current_tickets']}/{staff['max_tickets']}"
-            status = "🔴" if staff['current_tickets'] >= staff['max_tickets'] else "🟢"
+            status = "OK" if staff['current_tickets'] >= staff['max_tickets'] else "NO"
             
             print(f"{status} {staff['name']:20} {bar} {capacity}")
         
@@ -104,7 +104,7 @@ def get_allocation_report():
         print(f"Total Helpers: {len(staff_list)}")
         print("="*60 + "\n")
     except Exception as e:
-        print(f"✗ Error generating report: {e}")
+        print(f"Error generating report: {e}")
 
 
 def reassign_ticket(ticket_id: int, new_assignee: str, changed_by: str = "System") -> bool:
@@ -114,16 +114,16 @@ def reassign_ticket(ticket_id: int, new_assignee: str, changed_by: str = "System
         
         ticket = get_ticket(ticket_id)
         if not ticket:
-            print(f"✗ Ticket #{ticket_id} not found")
+            print(f"Ticket #{ticket_id} not found")
             return False
         
         old_assignee = ticket.assigned_to
         update_ticket(ticket_id, assigned_to=new_assignee, changed_by=changed_by)
         
-        print(f"✓ Reassigned ticket #{ticket_id}: {old_assignee} → {new_assignee}")
+        print(f"Reassigned ticket #{ticket_id}: {old_assignee} → {new_assignee}")
         return True
     except Exception as e:
-        print(f"✗ Reassignment error: {e}")
+        print(f"Reassignment error: {e}")
         return False
 
 
@@ -171,5 +171,5 @@ def get_helper_workload(helper_email: str) -> Dict:
             "total_handled": active_count + resolved_count
         }
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"Error: {e}")
         return {}
