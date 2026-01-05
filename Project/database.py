@@ -1,187 +1,341 @@
 import sqlite3
-from models import Ticket
+from datetime import datetime
+from typing import Optional, List
+from threading import Lock
 
-DATABASE_NAME = "ticket.db"
+DATABASE_NAME = "tickets.db"
 
-# INITIALZING THE DATABASE
+db_lock = Lock()
+
+
+# -------------------- MODELS --------------------
+
+class Ticket:
+    def __init__(
+        self,
+        ticket_id,
+        title,
+        description,
+        priority,
+        status,
+        assigned_to,
+        created_by,
+        created_at,
+        updated_at,
+    ):
+        self.id = ticket_id
+        self.title = title
+        self.description = description
+        self.priority = priority
+        self.status = status
+        self.assigned_to = assigned_to
+        self.created_by = created_by
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    def __repr__(self):
+        return f"Ticket(id={self.id}, title={self.title}, status={self.status})"
+
+
+class Comment:
+    def __init__(self, author, comment, is_internal):
+        self.author = author
+        self.comment = comment
+        self.is_internal = is_internal
+
+
+# -------------------- CONNECTION --------------------
+
+def get_connection():
+    return sqlite3.connect(
+        DATABASE_NAME,
+        timeout=30,
+        check_same_thread=False,
+        isolation_level=None
+    )
+
+
+# -------------------- INIT --------------------
+
 def init_database():
-    conn = sqlite3.connect(DATABASE_NAME)
-    cursor = conn.cursor()
+    with get_connection() as conn:
+        cursor = conn.cursor()
 
-    cursor.execute("""
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
+        cursor.execute("PRAGMA busy_timeout = 30000;")
+
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS tickets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            description TEXT NOT NULL,
-            priority TEXT DEFAULT 'Medium',
-            status TEXT DEFAULT 'OPEN',
-            assigned_to TEXT
+            title TEXT,
+            description TEXT,
+            priority TEXT,
+            status TEXT,
+            assigned_to TEXT,
+            created_by TEXT,
+            created_at TEXT,
+            updated_at TEXT
         )
-    """)
+        """)
 
-    conn.commit()
-    conn.close()
-    print("DATABASE INITIALIZED!!!")
-
-
-
-# CREATING A SINGLE TICKET
-def create_ticket(title, description, priority, assigned_to=None):
-    conn = sqlite3.connect(DATABASE_NAME)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        INSERT INTO tickets (title, description, priority, status, assigned_to)
-        VALUES (?, ?, ?, 'OPEN', ?)
-    """, (title, description, priority, assigned_to))
-
-    ticket_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-
-    ticket = Ticket(
-        ticket_id=ticket_id,
-        title=title,
-        description=description,
-        priority=priority,
-        status="OPEN",
-        assigned_to=assigned_to
-    )
-
-    print(f"Created {ticket}")
-    return ticket
-
-#  DIFFERENT TYPES OF STATUS
-VALID_STATUSES = {"OPEN", "IN_PROGRESS", "CLOSED"}
-
-
-# FOR UPDATING THE STATUS 
-def update_status(ticket_id, new_status):
-    if new_status not in VALID_STATUSES:
-        return "Invalid status"
-
-    conn = sqlite3.connect(DATABASE_NAME)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        UPDATE tickets
-        SET status = ?
-        WHERE id = ?
-    """, (new_status, ticket_id))
-
-    conn.commit()
-
-    if cursor.rowcount == 0:
-        conn.close()
-        return "Ticket not FOUND"
-
-    conn.close()
-    return f"Ticket {ticket_id} status updated to {new_status}"
-
-
-# IF A STAFF is ASSIGNED
-def assign_staff(ticket_id, staff_name):
-    conn = sqlite3.connect(DATABASE_NAME)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        UPDATE tickets
-        SET assigned_to = ?
-        WHERE id = ?
-    """, (staff_name, ticket_id))
-
-    conn.commit()
-
-    if cursor.rowcount == 0:
-        conn.close()
-        return "Ticket not FOUND"
-
-    conn.close()
-    return f"Ticket {ticket_id} assigned to {staff_name}"
-
-
-# FOR IDENTIFYNG ALL TICKETS
-def get_all_tickets():
-    conn = sqlite3.connect(DATABASE_NAME)
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT id, title, description, priority, status, assigned_to FROM tickets")
-    rows = cursor.fetchall()
-
-    conn.close()
-
-    tickets = []
-    for row in rows:
-        ticket = Ticket(
-            ticket_id=row[0],
-            title=row[1],
-            description=row[2],
-            priority=row[3],
-            status=row[4],
-            assigned_to=row[5]
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ticket_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id INTEGER,
+            field_changed TEXT,
+            old_value TEXT,
+            new_value TEXT,
+            changed_by TEXT,
+            changed_at TEXT
         )
-        tickets.append(ticket)
+        """)
 
-    return tickets
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id INTEGER,
+            author TEXT,
+            comment TEXT,
+            is_internal INTEGER,
+            created_at TEXT
+        )
+        """)
+
+        conn.commit()
+        print("Database initialized successfully")
 
 
-# FOR PRINTING A SINGLE TICKET
-def get_one_ticket(ticket_id):
-    conn = sqlite3.connect(DATABASE_NAME)
-    cursor = conn.cursor()
+# -------------------- HISTORY --------------------
 
+def log_ticket_history(
+    cursor,
+    ticket_id,
+    field,
+    old_value,
+    new_value,
+    changed_by
+):
     cursor.execute(
-        "SELECT id, title, description, priority, status, assigned_to FROM tickets WHERE id = ?",
-        (ticket_id,)
+        """
+        INSERT INTO ticket_history
+        (ticket_id, field_changed, old_value, new_value, changed_by, changed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            ticket_id,
+            field,
+            old_value,
+            new_value,
+            changed_by,
+            datetime.now().isoformat()
+        )
     )
 
+
+# -------------------- TICKETS --------------------
+
+def create_ticket(
+    title,
+    description,
+    priority="Medium",
+    created_by=None
+):
+    with db_lock:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        try:
+            now = datetime.now().isoformat()
+
+            cursor.execute("""
+            INSERT INTO tickets
+            (title, description, priority, status, assigned_to, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                title,
+                description,
+                priority,
+                "Open",
+                None,
+                created_by,
+                now,
+                now
+            ))
+
+            ticket_id = cursor.lastrowid
+
+            log_ticket_history(
+                cursor,
+                ticket_id,
+                "created",
+                None,
+                "Open",
+                created_by
+            )
+
+            conn.commit()
+            return get_ticket(ticket_id)
+
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def update_ticket(
+    ticket_id,
+    status=None,
+    assigned_to=None,
+    changed_by=None
+):
+    with db_lock:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        try:
+            ticket = get_ticket(ticket_id)
+            if not ticket:
+                raise ValueError("Ticket not found")
+
+            updates = {}
+
+            if status and status != ticket.status:
+                updates["status"] = (ticket.status, status)
+
+            if assigned_to and assigned_to != ticket.assigned_to:
+                updates["assigned_to"] = (ticket.assigned_to, assigned_to)
+
+            for field, (old, new) in updates.items():
+                cursor.execute(
+                    f"UPDATE tickets SET {field}=?, updated_at=? WHERE id=?",
+                    (new, datetime.now().isoformat(), ticket_id)
+                )
+
+                log_ticket_history(
+                    cursor,
+                    ticket_id,
+                    field,
+                    str(old),
+                    str(new),
+                    changed_by
+                )
+
+            conn.commit()
+            return get_ticket(ticket_id)
+
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def get_ticket(ticket_id) -> Optional[Ticket]:
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,))
     row = cursor.fetchone()
     conn.close()
 
-    if row is None:
+    if not row:
         return None
 
-    return Ticket(
-        ticket_id=row[0],
-        title=row[1],
-        description=row[2],
-        priority=row[3],
-        status=row[4],
-        assigned_to=row[5]
-    )
+    return Ticket(*row)
 
-# PRINTING THE DATABASE
-def print_all_tickets():
-    conn = sqlite3.connect(DATABASE_NAME)
+
+def get_all_tickets(**filters) -> List[Ticket]:
+    conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT * FROM tickets")
+    query = "SELECT * FROM tickets"
+    values = []
+
+    if filters:
+        query += " WHERE "
+        conditions = []
+        for k, v in filters.items():
+            conditions.append(f"{k}=?")
+            values.append(v)
+        query += " AND ".join(conditions)
+
+    cursor.execute(query, values)
     rows = cursor.fetchall()
-
     conn.close()
 
-    if not rows:
-        print("No tickets found.")
-        return
+    return [Ticket(*row) for row in rows]
 
-    print("\nID | Title | Description | Priority | Status | Assigned To")
-    print("-" * 70)
+def delete_ticket(ticket_id: int) -> bool:
+    with db_lock:
+        conn = get_connection()
+        cursor = conn.cursor()
 
-    for row in rows:
-        print(f"{row[0]} | {row[1]} | {row[2]} | {row[3]} | {row[4]} | {row[5]}")
+        try:
+            # Check if ticket exists
+            cursor.execute("SELECT id FROM tickets WHERE id=?", (ticket_id,))
+            row = cursor.fetchone()
+
+            if not row:
+                return False
+
+            # Delete related data first (important for integrity)
+            cursor.execute("DELETE FROM comments WHERE ticket_id=?", (ticket_id,))
+            cursor.execute("DELETE FROM ticket_history WHERE ticket_id=?", (ticket_id,))
+            cursor.execute("DELETE FROM tickets WHERE id=?", (ticket_id,))
+
+            conn.commit()
+            return True
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        finally:
+            conn.close()
 
 
 
+# -------------------- COMMENTS --------------------
 
-# FOR CLEARING THE DATABASE
-def delete_all_tickets():
-    conn = sqlite3.connect(DATABASE_NAME)
+def add_comment(ticket_id, author, comment, is_internal=False):
+    with db_lock:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        INSERT INTO comments
+        (ticket_id, author, comment, is_internal, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """, (
+            ticket_id,
+            author,
+            comment,
+            int(is_internal),
+            datetime.now().isoformat()
+        ))
+
+        conn.commit()
+        conn.close()
+
+
+def get_ticket_comments(ticket_id, include_internal=False):
+    conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("DELETE FROM tickets")
-    conn.commit()
+    if include_internal:
+        cursor.execute(
+            "SELECT author, comment, is_internal FROM comments WHERE ticket_id=?",
+            (ticket_id,)
+        )
+    else:
+        cursor.execute(
+            "SELECT author, comment, is_internal FROM comments WHERE ticket_id=? AND is_internal=0",
+            (ticket_id,)
+        )
 
-    deleted_count = cursor.rowcount
+    rows = cursor.fetchall()
     conn.close()
 
-    print( f"{deleted_count} tickets deleted successfully")
+    return [Comment(*row) for row in rows]
