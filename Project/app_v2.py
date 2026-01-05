@@ -33,7 +33,7 @@ async def startup_event():
     """Initialize database and users"""
     init_database()
     init_users_table()
-    print("✓ System initialized")
+    print("System initialized")
 
 
 # ==========================================
@@ -85,36 +85,21 @@ async def login(email: str, password: str):
 # TICKET ENDPOINTS
 # ==========================================
 
-@app.post("/tickets", response_model=TicketResponse, status_code=201, tags=["Tickets"])
+@app.post("/tickets", response_model=TicketResponse, status_code=201)
 async def create_new_ticket(
     ticket: TicketCreate,
-    x_user_email: str = Header(..., description="User email (auth token)")
+    x_user_email: str = Header(...)
 ):
-    """
-    Create a new ticket.
-    Customer creates their own tickets.
-    Admin can create tickets on behalf of customers.
-    """
     user = get_current_user(x_user_email)
-    
-    # Set created_by
-    created_by = ticket.created_by if ticket.created_by else user.email
-    
-    # Only admin can create on behalf of others
-    if created_by != user.email and user.role != ROLE_ADMIN:
-        raise HTTPException(status_code=403, detail="Cannot create ticket for others")
-    
-    try:
-        new_ticket = create_ticket(
-            title=ticket.title,
-            description=ticket.description,
-            priority=ticket.priority,
-            assigned_to=ticket.assigned_to,
-            created_by=created_by
-        )
-        return TicketResponse(**new_ticket.to_dict())
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+
+    new_ticket = create_ticket(
+        title=ticket.title,
+        description=ticket.description,
+        priority=ticket.priority,
+        created_by=user.email
+    )
+
+    return TicketResponse(**new_ticket.to_dict())
 
 
 @app.get("/tickets", response_model=List[TicketResponse], tags=["Tickets"])
