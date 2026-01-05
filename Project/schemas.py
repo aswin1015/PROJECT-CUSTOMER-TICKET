@@ -61,21 +61,20 @@ class TicketCreate(BaseModel):
     """Schema for creating a ticket"""
     title: str = Field(..., min_length=1, max_length=200, description="Ticket title")
     description: str = Field(..., min_length=1, description="Detailed description")
-    priority: str = Field(default="Medium", pattern="^(Low|Medium|High|Critical)$")
-    assigned_to: Optional[str] = Field(None, description="Email of staff to assign (optional)")
-    created_by: Optional[str] = None
+    priority: str = Field(
+        default="Medium",
+        pattern="^(Low|Medium|High|Critical)$",
+        description="Ticket priority"
+    )
 
     class Config:
         json_schema_extra = {
             "example": {
                 "title": "Cannot login to dashboard",
                 "description": "User reports being unable to login after password reset",
-                "priority": "High",
-                "created_by": "customer@example.com",
-                "assigned_to": "john@support.com"
+                "priority": "High"
             }
         }
-
 
 class TicketUpdate(BaseModel):
     """Schema for updating a ticket"""
