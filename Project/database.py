@@ -33,8 +33,26 @@ class Ticket:
         self.created_at = created_at
         self.updated_at = updated_at
 
+    def to_dict(self):
+        return {
+        "id": self.id,
+        "title": self.title,
+        "description": self.description,
+        "priority": self.priority,
+        "status": self.status,
+        "assigned_to": self.assigned_to,
+        "created_by": getattr(self, "created_by", None),
+        "created_at": getattr(self, "created_at", None),
+        "updated_at": getattr(self, "updated_at", None),
+        "resolved_at": getattr(self, "resolved_at", None),
+        "closed_at": getattr(self, "closed_at", None),
+    }
+
+    
+
     def __repr__(self):
         return f"Ticket(id={self.id}, title={self.title}, status={self.status})"
+
 
 
 class Comment:
