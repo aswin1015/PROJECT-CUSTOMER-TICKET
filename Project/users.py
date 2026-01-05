@@ -81,13 +81,13 @@ def create_user(email: str, name: str, role: str, password: Optional[str] = None
         conn.commit()
         conn.close()
         
-        print(f"✓ Created user: {name} ({role})")
+        print(f"Created user: {name} ({role})")
         return User(email, name, role, user_id, now)
     except sqlite3.IntegrityError:
-        print(f"✗ User with email {email} already exists")
+        print(f"User with email {email} already exists")
         raise
     except Exception as e:
-        print(f"✗ Error creating user: {e}")
+        print(f"Error creating user: {e}")
         raise
 
 
