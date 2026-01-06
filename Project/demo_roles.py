@@ -15,6 +15,10 @@ from database import (
 from users import init_users_table, setup_demo_users
 from permissions import *
 from allocation import get_available_staff, get_allocation_report
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def print_section(title):
@@ -31,14 +35,18 @@ def demo_customer_flow():
     print("\n1. Customer creates a ticket")
     customer_email = "customer1@example.com"
 
-    ticket = create_ticket(
-        title="Cannot login to my account",
-        description="I forgot my password and the reset link is not working",
-        priority="High",
-        created_by=customer_email,
-    )
+    try:
+        ticket = create_ticket(
+            title="Cannot login to my account",
+            description="I forgot my password and the reset link is not working",
+            priority="High",
+            created_by=customer_email,
+        )
 
-    print(f"[OK] Ticket #{ticket.id} created by {customer_email}")
+        print(f"[OK] Ticket #{ticket.id} created by {customer_email}")
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        return None
 
     print("\n2. Customer views their tickets")
     try:
@@ -50,12 +58,12 @@ def demo_customer_flow():
     except Exception as e:
         print(f"[ERROR] {e}")
 
-    print("\n3. Customer tries to update ticket (should fail)")
+    print("\n3. Customer tries to update ticket status (should fail)")
     try:
         assert_can_update_ticket(customer_email, ticket.id)
-        print("Updating ticket...")
+        print("[ERROR] Customer should not be able to update ticket!")
     except PermissionDenied as e:
-        print(f"[DENIED] {e}")
+        print(f"[OK - DENIED] {e}")
 
     return ticket.id
 
@@ -68,30 +76,36 @@ def demo_admin_flow(ticket_id):
 
     print("\n1. Admin views all tickets")
     try:
-        tickets = admin_view_all_tickets("admin@system.com")
-        print(f"Admin sees {len(tickets)} tickets")
-
-        admin_assign_ticket(
-            admin_email="admin@system.com",
-            ticket_id=1,
-            helper_email="john@support.com"
-        )
-        print("Ticket assigned successfully")
+        tickets = admin_view_all_tickets(admin_email)
+        print(f"[OK] Admin sees {len(tickets)} tickets")
     except PermissionDenied as e:
         print(f"[ERROR] {e}")
+        return
 
-    print("\n2. Admin checks helper workload")
+    print("\n2. Admin assigns ticket to helper")
+    try:
+        admin_assign_ticket(
+            admin_email=admin_email,
+            ticket_id=ticket_id,
+            helper_email="john@support.com"
+        )
+        print(f"[OK] Ticket #{ticket_id} assigned to john@support.com")
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        return
+
+    print("\n3. Admin checks helper workload")
     try:
         staff_list = get_available_staff()
         print("[OK] Available helpers:")
         for staff in staff_list:
+            status = "FULL" if staff['current_tickets'] >= staff['max_tickets'] else "OK"
             print(
-                f"  - {staff['name']} ({staff['email']}): "
+                f"  [{status}] {staff['name']} ({staff['email']}): "
                 f"{staff['current_tickets']}/{staff['max_tickets']} tickets"
             )
     except Exception as e:
         print(f"[ERROR] {e}")
-
 
 
 def demo_helper_flow(ticket_id):
@@ -121,17 +135,23 @@ def demo_helper_flow(ticket_id):
         print("[OK] Ticket status updated to 'In Progress'")
     except PermissionDenied as e:
         print(f"[ERROR] {e}")
+    except Exception as e:
+        print(f"[ERROR] {e}")
 
     print("\n3. Helper adds internal note")
     try:
         require_permission(helper_email, "add_comment", ticket_id=ticket_id)
-        add_comment(
-            ticket_id,
-            helper_email,
-            "Checked user account. Password reset link was expired.",
-            is_internal=True,
-        )
-        print("[OK] Internal note added")
+        
+        if can_add_internal_comment(helper_email):
+            add_comment(
+                ticket_id,
+                helper_email,
+                "Checked user account. Password reset link was expired.",
+                is_internal=True,
+            )
+            print("[OK] Internal note added")
+        else:
+            print("[ERROR] Helper should be able to add internal notes")
     except PermissionDenied as e:
         print(f"[ERROR] {e}")
 
@@ -170,7 +190,7 @@ def demo_customer_sees_updates(ticket_id):
         assert_can_view_ticket(customer_email, ticket_id)
         ticket = get_ticket(ticket_id)
         print(f"[OK] Ticket #{ticket.id} - Status: {ticket.status}")
-        print(f"Assigned to: {ticket.assigned_to}")
+        print(f"     Assigned to: {ticket.assigned_to}")
     except PermissionDenied as e:
         print(f"[ERROR] {e}")
 
@@ -180,7 +200,8 @@ def demo_customer_sees_updates(ticket_id):
         comments = get_ticket_comments(ticket_id, include_internal=include_internal)
         print(f"[OK] Customer sees {len(comments)} comment(s)")
         for c in comments:
-            print(f"  [{c.author}]: {c.comment}")
+            internal_flag = " [INTERNAL]" if c.is_internal else ""
+            print(f"  [{c.author}]{internal_flag}: {c.comment}")
     except Exception as e:
         print(f"[ERROR] {e}")
 
@@ -212,43 +233,60 @@ def demo_permission_checks():
         ("Delete tickets", can_delete_ticket),
         ("View internal comments", can_view_internal_comments),
         ("Manage users", can_manage_users),
+        ("View analytics", can_view_analytics),
     ]
 
-    print(f"{'Action':<30} {'Customer':<10} {'Helper':<10} {'Admin':<10}")
+    print(f"\n{'Action':<30} {'Customer':<10} {'Helper':<10} {'Admin':<10}")
     print("-" * 70)
 
     for action, check in checks:
+        customer_can = "YES" if check(customer) else "NO"
+        helper_can = "YES" if check(helper) else "NO"
+        admin_can = "YES" if check(admin) else "NO"
+        
         print(
-            f"{action:<30} "
-            f"{'YES' if check(customer) else 'NO':<10} "
-            f"{'YES' if check(helper) else 'NO':<10} "
-            f"{'YES' if check(admin) else 'NO':<10}"
+            f"{action:<30} {customer_can:<10} {helper_can:<10} {admin_can:<10}"
         )
 
 
 def run_complete_demo():
     """Run the complete role-based demo"""
-    print("\n" + "=" * 35)
+    print("\n" + "=" * 70)
     print("CUSTOMER SUPPORT TICKETING SYSTEM - ROLE DEMO")
-    print("=" * 35)
+    print("=" * 70)
 
     print("\nInitializing system...")
-    init_database()
-    init_users_table()
-    setup_demo_users()
+    try:
+        init_database()
+        init_users_table()
+        setup_demo_users()
+        print("[OK] System initialized")
+    except Exception as e:
+        print(f"[ERROR] Initialization failed: {e}")
+        return
 
     ticket_id = demo_customer_flow()
-    demo_admin_flow(ticket_id)
-    demo_helper_flow(ticket_id)
-    demo_customer_sees_updates(ticket_id)
+    if ticket_id:
+        demo_admin_flow(ticket_id)
+        demo_helper_flow(ticket_id)
+        demo_customer_sees_updates(ticket_id)
+    
     demo_permission_checks()
 
     print_section("FINAL WORKLOAD REPORT")
-    get_allocation_report()
+    try:
+        get_allocation_report()
+    except Exception as e:
+        print(f"[ERROR] {e}")
 
-    print("\n" + "=" * 35)
+    print("\n" + "=" * 70)
     print("DEMO COMPLETED")
-    print("=" * 35)
+    print("=" * 70)
+    print("\nSummary:")
+    print("- Customers can create and view their own tickets")
+    print("- Helpers can view and update assigned tickets")
+    print("- Admins can manage all tickets and users")
+    print("- Permission system enforces role-based access control")
 
 
 if __name__ == "__main__":
