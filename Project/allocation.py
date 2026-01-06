@@ -1,7 +1,12 @@
 from typing import Optional, List, Dict
 import sqlite3
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 DATABASE_NAME = "tickets.db"
+
 
 def get_staff_workload() -> Dict[str, int]:
     """Get current workload for all helpers"""
@@ -9,7 +14,6 @@ def get_staff_workload() -> Dict[str, int]:
         conn = sqlite3.connect(DATABASE_NAME)
         cursor = conn.cursor()
         
- 
         cursor.execute("""
             SELECT assigned_to, COUNT(*) as count
             FROM tickets
@@ -21,7 +25,7 @@ def get_staff_workload() -> Dict[str, int]:
         for row in cursor.fetchall():
             workload[row[0]] = row[1]
         
-
+        # Get all helpers and set 0 for those with no tickets
         cursor.execute("SELECT email FROM users WHERE role = 'helper' AND is_active = 1")
         for (email,) in cursor.fetchall():
             if email not in workload:
@@ -30,7 +34,7 @@ def get_staff_workload() -> Dict[str, int]:
         conn.close()
         return workload
     except Exception as e:
-        print(f"Error getting workload: {e}")
+        logger.error(f"Error getting workload: {e}", exc_info=True)
         return {}
 
 
@@ -40,7 +44,6 @@ def get_available_staff() -> List[Dict]:
         conn = sqlite3.connect(DATABASE_NAME)
         cursor = conn.cursor()
         
-
         cursor.execute("""
             SELECT email, name, role
             FROM users
@@ -71,7 +74,7 @@ def get_available_staff() -> List[Dict]:
         
         return staff_list
     except Exception as e:
-        print(f" Error getting available staff: {e}")
+        logger.error(f"Error getting available staff: {e}", exc_info=True)
         return []
 
 
@@ -91,9 +94,10 @@ def get_allocation_report():
         for staff in staff_list:
             bar = "||" * staff['current_tickets']
             capacity = f"{staff['current_tickets']}/{staff['max_tickets']}"
-            status = "OK" if staff['current_tickets'] >= staff['max_tickets'] else "NO"
+            # FIXED: Logic was reversed - now shows FULL when at/over capacity
+            status = "FULL" if staff['current_tickets'] >= staff['max_tickets'] else "OK"
             
-            print(f"{status} {staff['name']:20} {bar} {capacity}")
+            print(f"{status:4} {staff['name']:20} {bar} {capacity}")
         
         total = sum(s['current_tickets'] for s in staff_list)
         avg = total / len(staff_list) if staff_list else 0
@@ -104,7 +108,7 @@ def get_allocation_report():
         print(f"Total Helpers: {len(staff_list)}")
         print("="*60 + "\n")
     except Exception as e:
-        print(f"Error generating report: {e}")
+        logger.error(f"Error generating report: {e}", exc_info=True)
 
 
 def reassign_ticket(ticket_id: int, new_assignee: str, changed_by: str = "System") -> bool:
@@ -114,16 +118,16 @@ def reassign_ticket(ticket_id: int, new_assignee: str, changed_by: str = "System
         
         ticket = get_ticket(ticket_id)
         if not ticket:
-            print(f"Ticket #{ticket_id} not found")
+            logger.warning(f"Ticket #{ticket_id} not found")
             return False
         
         old_assignee = ticket.assigned_to
         update_ticket(ticket_id, assigned_to=new_assignee, changed_by=changed_by)
         
-        print(f"Reassigned ticket #{ticket_id}: {old_assignee} → {new_assignee}")
+        logger.info(f"Reassigned ticket #{ticket_id}: {old_assignee} → {new_assignee}")
         return True
     except Exception as e:
-        print(f"Reassignment error: {e}")
+        logger.error(f"Reassignment error: {e}", exc_info=True)
         return False
 
 
@@ -135,12 +139,13 @@ def get_helper_workload(helper_email: str) -> Dict:
         
         # Get helper info
         cursor.execute("""
-            SELECT name, email FROM users WHERE email = ? AND role = 'helper'
+            SELECT name, email FROM users WHERE email = ? AND role = 'helper' AND is_active = 1
         """, (helper_email,))
         
         helper_row = cursor.fetchone()
         if not helper_row:
             conn.close()
+            logger.warning(f"Helper {helper_email} not found")
             return {}
         
         name, email = helper_row
@@ -171,5 +176,85 @@ def get_helper_workload(helper_email: str) -> Dict:
             "total_handled": active_count + resolved_count
         }
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error getting helper workload: {e}", exc_info=True)
         return {}
+
+
+def auto_assign_ticket(ticket_id: int, changed_by: str = "System") -> Optional[str]:
+    """
+    Automatically assign ticket to helper with most available capacity
+    Returns the email of assigned helper, or None if no helpers available
+    """
+    try:
+        staff_list = get_available_staff()
+        
+        if not staff_list:
+            logger.warning("No helpers available for auto-assignment")
+            return None
+        
+        # Find helper with most available capacity
+        best_helper = staff_list[0]  # Already sorted by capacity
+        
+        if best_helper['available_capacity'] <= 0:
+            logger.warning("All helpers are at full capacity")
+            return None
+        
+        # Assign ticket
+        if reassign_ticket(ticket_id, best_helper['email'], changed_by):
+            logger.info(f"Auto-assigned ticket #{ticket_id} to {best_helper['name']}")
+            return best_helper['email']
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error auto-assigning ticket: {e}", exc_info=True)
+        return None
+
+
+def balance_workload(changed_by: str = "System") -> Dict[str, int]:
+    """
+    Balance workload across all helpers by reassigning tickets
+    Returns dict with reassignment counts
+    """
+    try:
+        from database import get_all_tickets
+        
+        staff_list = get_available_staff()
+        if len(staff_list) < 2:
+            logger.info("Not enough helpers for balancing")
+            return {"reassigned": 0}
+        
+        # Find overloaded and underloaded helpers
+        avg_load = sum(s['current_tickets'] for s in staff_list) / len(staff_list)
+        
+        overloaded = [s for s in staff_list if s['current_tickets'] > avg_load + 2]
+        underloaded = sorted(
+            [s for s in staff_list if s['current_tickets'] < avg_load],
+            key=lambda x: x['current_tickets']
+        )
+        
+        reassigned = 0
+        
+        for helper in overloaded:
+            # Get their tickets
+            tickets = get_all_tickets(assigned_to=helper['email'], status='Open')
+            
+            # Reassign excess tickets
+            excess = int(helper['current_tickets'] - avg_load)
+            for i, ticket in enumerate(tickets[:excess]):
+                if not underloaded:
+                    break
+                
+                target = underloaded[0]
+                if reassign_ticket(ticket.id, target['email'], changed_by):
+                    reassigned += 1
+                    target['current_tickets'] += 1
+                    
+                    # Re-sort underloaded list
+                    underloaded.sort(key=lambda x: x['current_tickets'])
+        
+        logger.info(f"Workload balanced: {reassigned} tickets reassigned")
+        return {"reassigned": reassigned, "average_load": avg_load}
+        
+    except Exception as e:
+        logger.error(f"Error balancing workload: {e}", exc_info=True)
+        return {"reassigned": 0, "error": str(e)}
