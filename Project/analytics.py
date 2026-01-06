@@ -2,6 +2,10 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Dict, List, Any
 from collections import defaultdict
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 DATABASE_NAME = "tickets.db"
 
@@ -40,7 +44,7 @@ def get_ticket_stats() -> Dict[str, Any]:
         conn.close()
         return stats
     except Exception as e:
-        print(f"Error getting stats: {e}")
+        logger.error(f"Error getting stats: {e}", exc_info=True)
         return {}
 
 
@@ -51,7 +55,7 @@ def get_tickets_by_status(status: str) -> List[Dict]:
         tickets = get_all_tickets(status=status)
         return [t.to_dict() for t in tickets]
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error getting tickets by status: {e}", exc_info=True)
         return []
 
 
@@ -62,7 +66,7 @@ def get_tickets_by_priority(priority: str) -> List[Dict]:
         tickets = get_all_tickets(priority=priority)
         return [t.to_dict() for t in tickets]
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error getting tickets by priority: {e}", exc_info=True)
         return []
 
 
@@ -73,7 +77,7 @@ def get_tickets_by_assignee(email: str) -> List[Dict]:
         tickets = get_all_tickets(assigned_to=email)
         return [t.to_dict() for t in tickets]
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error getting tickets by assignee: {e}", exc_info=True)
         return []
 
 
@@ -97,7 +101,7 @@ def get_tickets_created_today() -> int:
         conn.close()
         return count
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error getting today's tickets: {e}", exc_info=True)
         return 0
 
 
@@ -128,7 +132,7 @@ def get_tickets_by_date_range(start_date: str, end_date: str) -> List[Dict]:
         
         return tickets
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error getting tickets by date range: {e}", exc_info=True)
         return []
 
 
@@ -152,15 +156,18 @@ def get_average_resolution_time() -> float:
         
         total_hours = 0
         for created, resolved in rows:
-            created_dt = datetime.fromisoformat(created)
-            resolved_dt = datetime.fromisoformat(resolved)
-            hours = (resolved_dt - created_dt).total_seconds() / 3600
-            total_hours += hours
+            try:
+                created_dt = datetime.fromisoformat(created)
+                resolved_dt = datetime.fromisoformat(resolved)
+                hours = (resolved_dt - created_dt).total_seconds() / 3600
+                total_hours += hours
+            except (ValueError, TypeError):
+                continue
         
-        avg_hours = total_hours / len(rows)
+        avg_hours = total_hours / len(rows) if rows else 0
         return round(avg_hours, 2)
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error calculating resolution time: {e}", exc_info=True)
         return 0.0
 
 
@@ -192,8 +199,12 @@ def get_staff_performance() -> List[Dict[str, Any]]:
         """)
         resolved = dict(cursor.fetchall())
         
-        # Get staff info
-        cursor.execute("SELECT email, name, role FROM support_staff WHERE is_active = 1")
+        # FIXED: Changed from support_staff to users table
+        cursor.execute("""
+            SELECT email, name, role 
+            FROM users 
+            WHERE role = 'helper' AND is_active = 1
+        """)
         staff_rows = cursor.fetchall()
         
         conn.close()
@@ -214,7 +225,7 @@ def get_staff_performance() -> List[Dict[str, Any]]:
         
         return performance
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error getting staff performance: {e}", exc_info=True)
         return []
 
 
@@ -246,7 +257,7 @@ def get_ticket_trends(days: int = 7) -> Dict[str, int]:
         conn.close()
         return dict(sorted(trends.items()))
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error getting ticket trends: {e}", exc_info=True)
         return {}
 
 
@@ -271,7 +282,7 @@ def get_priority_distribution() -> Dict[str, Dict[str, int]]:
         
         return dict(distribution)
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error getting priority distribution: {e}", exc_info=True)
         return {}
 
 
@@ -329,36 +340,44 @@ def export_report_to_text(filename: str = "ticket_report.txt"):
         stats = get_ticket_stats()
         performance = get_staff_performance()
         trends = get_ticket_trends(7)
+        avg_resolution = get_average_resolution_time()
         
-        with open(filename, 'w') as f:
+        with open(filename, 'w', encoding='utf-8') as f:
             f.write("CUSTOMER SUPPORT TICKETING SYSTEM - REPORT\n")
             f.write("=" * 70 + "\n")
             f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
             
             f.write("OVERALL STATISTICS\n")
             f.write("-" * 70 + "\n")
-            for key, value in stats.items():
-                if isinstance(value, dict):
-                    f.write(f"{key}:\n")
-                    for k, v in value.items():
-                        f.write(f"  {k}: {v}\n")
-                else:
-                    f.write(f"{key}: {value}\n")
+            f.write(f"Total Tickets: {stats.get('total_tickets', 0)}\n")
+            f.write(f"Active Tickets: {stats.get('active_tickets', 0)}\n")
+            f.write(f"Unassigned Tickets: {stats.get('unassigned_tickets', 0)}\n")
+            f.write(f"Average Resolution Time: {avg_resolution} hours\n\n")
+            
+            f.write("BY STATUS:\n")
+            for status, count in stats.get('by_status', {}).items():
+                f.write(f"  {status}: {count}\n")
+            
+            f.write("\nBY PRIORITY:\n")
+            for priority, count in stats.get('by_priority', {}).items():
+                f.write(f"  {priority}: {count}\n")
             
             f.write("\n\nSTAFF PERFORMANCE\n")
             f.write("-" * 70 + "\n")
             for staff in performance:
                 f.write(f"{staff['name']} ({staff['email']}):\n")
-                f.write(f"  Active: {staff['active_tickets']}, Resolved: {staff['resolved_tickets']}\n")
+                f.write(f"  Active: {staff['active_tickets']}, Resolved: {staff['resolved_tickets']}, ")
+                f.write(f"Total: {staff['total_handled']}\n")
             
             f.write("\n\n7-DAY TREND\n")
             f.write("-" * 70 + "\n")
             for date, count in trends.items():
                 f.write(f"{date}: {count} tickets\n")
         
-        print(f"Report exported to {filename}")
+        logger.info(f"Report exported to {filename}")
+        print(f"✓ Report exported to {filename}")
     except Exception as e:
-        print(f"Error exporting report: {e}")
+        logger.error(f"Error exporting report: {e}", exc_info=True)
 
 
 def search_tickets(keyword: str) -> List[Dict]:
@@ -386,8 +405,51 @@ def search_tickets(keyword: str) -> List[Dict]:
             )
             tickets.append(ticket.to_dict())
         
-        print(f"Found {len(tickets)} tickets matching '{keyword}'")
+        logger.info(f"Found {len(tickets)} tickets matching '{keyword}'")
         return tickets
     except Exception as e:
-        print(f"Error searching: {e}")
+        logger.error(f"Error searching tickets: {e}", exc_info=True)
         return []
+
+
+def get_response_time_stats() -> Dict[str, float]:
+    """Get statistics about ticket response times"""
+    try:
+        conn = sqlite3.connect(DATABASE_NAME)
+        cursor = conn.cursor()
+        
+        # Get time to first comment (response time)
+        cursor.execute("""
+            SELECT 
+                t.created_at,
+                MIN(c.created_at) as first_response
+            FROM tickets t
+            LEFT JOIN comments c ON t.id = c.ticket_id
+            WHERE c.author != t.created_by
+            GROUP BY t.id
+            HAVING first_response IS NOT NULL
+        """)
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        if not rows:
+            return {"avg_response_hours": 0.0, "ticket_count": 0}
+        
+        total_hours = 0
+        for created, first_response in rows:
+            try:
+                created_dt = datetime.fromisoformat(created)
+                response_dt = datetime.fromisoformat(first_response)
+                hours = (response_dt - created_dt).total_seconds() / 3600
+                total_hours += hours
+            except (ValueError, TypeError):
+                continue
+        
+        return {
+            "avg_response_hours": round(total_hours / len(rows), 2) if rows else 0.0,
+            "ticket_count": len(rows)
+        }
+    except Exception as e:
+        logger.error(f"Error getting response time stats: {e}", exc_info=True)
+        return {"avg_response_hours": 0.0, "ticket_count": 0}
