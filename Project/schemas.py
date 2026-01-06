@@ -1,8 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
-from datetime import datetime
-
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List, Dict
 from datetime import datetime
 
@@ -34,6 +30,7 @@ class UserResponse(BaseModel):
     email: str
     name: str
     role: str
+    is_active: bool = True
     created_at: str
 
     class Config:
@@ -51,6 +48,12 @@ class LoginResponse(BaseModel):
     message: str
     user: Dict
     token: str  # In real app, this would be JWT
+
+
+class PasswordChange(BaseModel):
+    """Schema for password change"""
+    old_password: str
+    new_password: str = Field(..., min_length=6)
 
 
 # ==========================================
@@ -76,21 +79,19 @@ class TicketCreate(BaseModel):
             }
         }
 
+
 class TicketUpdate(BaseModel):
     """Schema for updating a ticket"""
-    title: Optional[str] = Field(None, min_length=1, max_length=200)
-    description: Optional[str] = Field(None, min_length=1)
-    priority: Optional[str] = Field(None, pattern="^(Low|Medium|High|Critical)$")
-    status: Optional[str] = Field(None, pattern="^(Open|In Progress|Resolved|Closed|On Hold)$")
+    status: Optional[str] = Field(
+        None,
+        pattern="^(Open|In Progress|Resolved|Closed|On Hold)$"
+    )
     assigned_to: Optional[str] = None
-    changed_by: str = Field(default="System", description="Who made the change")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "status": "In Progress",
-                "priority": "Critical",
-                "changed_by": "john@support.com"
+                "status": "In Progress"
             }
         }
 
@@ -102,54 +103,27 @@ class TicketResponse(BaseModel):
     description: str
     priority: str
     status: str
-    assigned_to: Optional[str]
-    created_by: Optional[str]
+    assigned_to: Optional[str] = None
+    created_by: Optional[str] = None
     created_at: str
     updated_at: str
-    resolved_at: Optional[str]
-    closed_at: Optional[str]
+    resolved_at: Optional[str] = None
+    closed_at: Optional[str] = None
 
     class Config:
         from_attributes = True
 
 
-# ==========================================
-# STAFF SCHEMAS
-# ==========================================
-
-class StaffCreate(BaseModel):
-    """Schema for creating support staff"""
-    email: EmailStr
-    name: str = Field(..., min_length=1, max_length=100)
-    role: str = Field(default="Support Agent", pattern="^(Support Agent|Senior Agent|Team Lead|Manager)$")
-    expertise: Optional[str] = None
-    max_tickets: int = Field(default=10, ge=1, le=50)
+class TicketAssign(BaseModel):
+    """Schema for assigning ticket"""
+    helper_email: EmailStr
 
     class Config:
         json_schema_extra = {
             "example": {
-                "email": "john@support.com",
-                "name": "John Smith",
-                "role": "Senior Agent",
-                "expertise": "Authentication, Security",
-                "max_tickets": 15
+                "helper_email": "john@support.com"
             }
         }
-
-
-class StaffResponse(BaseModel):
-    """Schema for staff response"""
-    id: int
-    email: str
-    name: str
-    role: str
-    expertise: Optional[str]
-    is_active: bool
-    max_tickets: int
-    created_at: str
-
-    class Config:
-        from_attributes = True
 
 
 # ==========================================
@@ -157,15 +131,16 @@ class StaffResponse(BaseModel):
 # ==========================================
 
 class CommentCreate(BaseModel):
-    """Schema for creating a comment"""
-    author: str = Field(..., min_length=1)
+    """Schema for creating a comment (author comes from auth header)"""
     comment: str = Field(..., min_length=1, max_length=2000)
-    is_internal: bool = Field(default=False, description="Internal note (not visible to customers)")
+    is_internal: bool = Field(
+        default=False, 
+        description="Internal note (not visible to customers)"
+    )
 
     class Config:
         json_schema_extra = {
             "example": {
-                "author": "john@support.com",
                 "comment": "Looking into this issue now",
                 "is_internal": True
             }
@@ -186,36 +161,6 @@ class CommentResponse(BaseModel):
 
 
 # ==========================================
-# CATEGORY SCHEMAS
-# ==========================================
-
-class CategoryCreate(BaseModel):
-    """Schema for creating a category"""
-    name: str = Field(..., min_length=1, max_length=100)
-    description: Optional[str] = None
-    parent_id: Optional[int] = None
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "name": "Technical Support",
-                "description": "Technical issues and bugs"
-            }
-        }
-
-
-class CategoryResponse(BaseModel):
-    """Schema for category response"""
-    id: int
-    name: str
-    description: Optional[str]
-    parent_id: Optional[int]
-
-    class Config:
-        from_attributes = True
-
-
-# ==========================================
 # ANALYTICS SCHEMAS
 # ==========================================
 
@@ -224,8 +169,8 @@ class TicketStats(BaseModel):
     total_tickets: int
     active_tickets: int
     unassigned_tickets: int
-    by_status: dict
-    by_priority: dict
+    by_status: Dict[str, int]
+    by_priority: Dict[str, int]
 
 
 class StaffPerformance(BaseModel):
@@ -258,6 +203,19 @@ class WorkloadReport(BaseModel):
     available_capacity: int
 
 
+class TrendData(BaseModel):
+    """Schema for trend data"""
+    date: str
+    count: int
+
+
+class ResolutionTimeStats(BaseModel):
+    """Schema for resolution time statistics"""
+    avg_resolution_hours: float
+    avg_response_hours: float = 0.0
+    ticket_count: int
+
+
 # ==========================================
 # GENERAL SCHEMAS
 # ==========================================
@@ -279,30 +237,78 @@ class MessageResponse(BaseModel):
 class HealthCheck(BaseModel):
     """Health check response"""
     status: str
-    timestamp: str
-    database: str
-    total_tickets: int
+    message: str
+    version: str
+    roles: List[str]
 
 
-class TagCreate(BaseModel):
-    """Schema for creating a tag"""
-    tag: str = Field(..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
+class ErrorResponse(BaseModel):
+    """Error response schema"""
+    detail: str
+    error_code: Optional[str] = None
 
     class Config:
         json_schema_extra = {
             "example": {
-                "tag": "urgent"
+                "detail": "Resource not found",
+                "error_code": "NOT_FOUND"
             }
         }
 
 
-class AssignCategory(BaseModel):
-    """Schema for assigning category"""
-    category_id: int = Field(..., ge=1)
+class SearchRequest(BaseModel):
+    """Schema for search request"""
+    keyword: str = Field(..., min_length=1, max_length=100)
 
     class Config:
         json_schema_extra = {
             "example": {
-                "category_id": 1
+                "keyword": "login issue"
+            }
+        }
+
+
+class DateRangeRequest(BaseModel):
+    """Schema for date range queries"""
+    start_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+    @field_validator('end_date')
+    def validate_date_range(cls, v, info):
+        if 'start_date' in info.data and v < info.data['start_date']:
+            raise ValueError('end_date must be after start_date')
+        return v
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "start_date": "2025-01-01",
+                "end_date": "2025-01-31"
+            }
+        }
+
+
+class BulkAssignRequest(BaseModel):
+    """Schema for bulk ticket assignment"""
+    ticket_ids: List[int] = Field(..., min_length=1)
+    helper_email: EmailStr
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "ticket_ids": [1, 2, 3],
+                "helper_email": "john@support.com"
+            }
+        }
+
+
+class ReassignRequest(BaseModel):
+    """Schema for ticket reassignment"""
+    new_helper_email: EmailStr
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "new_helper_email": "sarah@support.com"
             }
         }
