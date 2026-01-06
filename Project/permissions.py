@@ -4,12 +4,15 @@ Permission system to control what each role can do
 
 from users import get_user_by_email, ROLE_CUSTOMER, ROLE_HELPER, ROLE_ADMIN
 from database import get_ticket, get_all_tickets, update_ticket
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class PermissionDenied(Exception):
     """Raised when user doesn't have permission"""
     pass
-
 
 
 def admin_view_all_tickets(admin_email: str):
@@ -29,6 +32,11 @@ def admin_assign_ticket(admin_email: str, ticket_id: int, helper_email: str):
     ticket = get_ticket(ticket_id)
     if not ticket:
         raise ValueError("Ticket not found")
+    
+    # Verify helper exists and is active
+    helper = get_user_by_email(helper_email)
+    if not helper or helper.role != ROLE_HELPER or not helper.is_active:
+        raise ValueError("Invalid or inactive helper")
 
     update_ticket(
         ticket_id,
@@ -36,12 +44,14 @@ def admin_assign_ticket(admin_email: str, ticket_id: int, helper_email: str):
         changed_by=admin_email,
     )
 
+    logger.info(f"Admin {admin_email} assigned ticket #{ticket_id} to {helper_email}")
     return ticket
 
 
 def can_create_ticket(user_email: str) -> bool:
     """Anyone can create tickets"""
-    return True
+    user = get_user_by_email(user_email)
+    return user is not None and user.is_active
 
 
 def can_view_ticket(user_email: str, ticket_id: int) -> bool:
@@ -51,7 +61,7 @@ def can_view_ticket(user_email: str, ticket_id: int) -> bool:
     - Admin: Can view all tickets
     """
     user = get_user_by_email(user_email)
-    if not user:
+    if not user or not user.is_active:
         return False
     
     ticket = get_ticket(ticket_id)
@@ -80,7 +90,7 @@ def can_view_all_tickets(user_email: str) -> bool:
     - Admin: Yes (all tickets)
     """
     user = get_user_by_email(user_email)
-    return user and user.role == ROLE_ADMIN
+    return user and user.role == ROLE_ADMIN and user.is_active
 
 
 def can_update_ticket(user_email: str, ticket_id: int) -> bool:
@@ -90,7 +100,7 @@ def can_update_ticket(user_email: str, ticket_id: int) -> bool:
     - Admin: Can update all tickets
     """
     user = get_user_by_email(user_email)
-    if not user:
+    if not user or not user.is_active:
         return False
     
     ticket = get_ticket(ticket_id)
@@ -105,6 +115,7 @@ def can_update_ticket(user_email: str, ticket_id: int) -> bool:
     if user.role == ROLE_HELPER:
         return ticket.assigned_to == user_email
     
+    # Customers cannot update tickets
     return False
 
 
@@ -115,7 +126,7 @@ def can_delete_ticket(user_email: str) -> bool:
     - Admin: Yes
     """
     user = get_user_by_email(user_email)
-    return user and user.role == ROLE_ADMIN
+    return user and user.role == ROLE_ADMIN and user.is_active
 
 
 def can_assign_ticket(user_email: str) -> bool:
@@ -125,7 +136,7 @@ def can_assign_ticket(user_email: str) -> bool:
     - Admin: Yes
     """
     user = get_user_by_email(user_email)
-    return user and user.role == ROLE_ADMIN
+    return user and user.role == ROLE_ADMIN and user.is_active
 
 
 def can_add_comment(user_email: str, ticket_id: int) -> bool:
@@ -135,7 +146,7 @@ def can_add_comment(user_email: str, ticket_id: int) -> bool:
     - Admin: Can comment on all tickets
     """
     user = get_user_by_email(user_email)
-    if not user:
+    if not user or not user.is_active:
         return False
     
     ticket = get_ticket(ticket_id)
@@ -157,6 +168,16 @@ def can_add_comment(user_email: str, ticket_id: int) -> bool:
     return False
 
 
+def can_add_internal_comment(user_email: str) -> bool:
+    """
+    - Customer: No (cannot add internal notes)
+    - Helper: Yes
+    - Admin: Yes
+    """
+    user = get_user_by_email(user_email)
+    return user and user.role in [ROLE_HELPER, ROLE_ADMIN] and user.is_active
+
+
 def can_view_internal_comments(user_email: str) -> bool:
     """
     - Customer: No (cannot see internal notes)
@@ -164,7 +185,7 @@ def can_view_internal_comments(user_email: str) -> bool:
     - Admin: Yes
     """
     user = get_user_by_email(user_email)
-    return user and user.role in [ROLE_HELPER, ROLE_ADMIN]
+    return user and user.role in [ROLE_HELPER, ROLE_ADMIN] and user.is_active
 
 
 def can_view_workload(user_email: str) -> bool:
@@ -174,7 +195,7 @@ def can_view_workload(user_email: str) -> bool:
     - Admin: Can view all workload
     """
     user = get_user_by_email(user_email)
-    return user and user.role in [ROLE_HELPER, ROLE_ADMIN]
+    return user and user.role in [ROLE_HELPER, ROLE_ADMIN] and user.is_active
 
 
 def can_manage_users(user_email: str) -> bool:
@@ -184,7 +205,17 @@ def can_manage_users(user_email: str) -> bool:
     - Admin: Yes
     """
     user = get_user_by_email(user_email)
-    return user and user.role == ROLE_ADMIN
+    return user and user.role == ROLE_ADMIN and user.is_active
+
+
+def can_view_analytics(user_email: str) -> bool:
+    """
+    - Customer: No
+    - Helper: Limited (own stats only)
+    - Admin: Yes (full analytics)
+    """
+    user = get_user_by_email(user_email)
+    return user and user.role in [ROLE_HELPER, ROLE_ADMIN] and user.is_active
 
 
 def get_user_tickets_filter(user_email: str) -> dict:
@@ -193,8 +224,8 @@ def get_user_tickets_filter(user_email: str) -> dict:
     Returns dict to pass to get_all_tickets()
     """
     user = get_user_by_email(user_email)
-    if not user:
-        return {}
+    if not user or not user.is_active:
+        return {"created_by": "___NONEXISTENT___"}  # Return no tickets
     
     # Admin sees all tickets
     if user.role == ROLE_ADMIN:
@@ -224,15 +255,21 @@ def require_permission(user_email: str, action: str, **kwargs):
         "delete_ticket": lambda: can_delete_ticket(user_email),
         "assign_ticket": lambda: can_assign_ticket(user_email),
         "add_comment": lambda: can_add_comment(user_email, kwargs.get("ticket_id")),
+        "add_internal_comment": lambda: can_add_internal_comment(user_email),
         "view_internal_comments": lambda: can_view_internal_comments(user_email),
         "view_workload": lambda: can_view_workload(user_email),
         "manage_users": lambda: can_manage_users(user_email),
+        "view_analytics": lambda: can_view_analytics(user_email),
     }
     
     check = permission_checks.get(action)
-    if not check or not check():
+    if not check:
+        raise ValueError(f"Unknown permission action: {action}")
+    
+    if not check():
         user = get_user_by_email(user_email)
         role = user.role if user else "unknown"
+        logger.warning(f"Permission denied: {role} user {user_email} attempted to {action}")
         raise PermissionDenied(f"User ({role}) does not have permission to {action}")
 
 
@@ -251,3 +288,19 @@ def assert_can_update_ticket(user_email: str, ticket_id: int):
 def assert_is_admin(user_email: str):
     """Raise exception if user is not admin"""
     require_permission(user_email, "assign_ticket")
+
+
+def assert_is_helper_or_admin(user_email: str):
+    """Raise exception if user is not helper or admin"""
+    user = get_user_by_email(user_email)
+    if not user or user.role not in [ROLE_HELPER, ROLE_ADMIN] or not user.is_active:
+        raise PermissionDenied("User must be a helper or admin")
+
+
+def get_accessible_tickets(user_email: str, **additional_filters):
+    """
+    Get all tickets accessible to user with optional additional filters
+    """
+    base_filters = get_user_tickets_filter(user_email)
+    base_filters.update(additional_filters)
+    return get_all_tickets(**base_filters)
