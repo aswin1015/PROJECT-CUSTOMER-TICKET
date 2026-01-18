@@ -1,8 +1,12 @@
 import sqlite3
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Any
 from collections import defaultdict
-import logging
+
+from database import get_all_tickets
+from models import Ticket
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -176,57 +180,52 @@ def get_average_resolution_time() -> float:
 # ==========================================
 
 def get_staff_performance() -> List[Dict[str, Any]]:
-    """Get performance metrics for all staff"""
-    try:
-        conn = sqlite3.connect(DATABASE_NAME)
-        cursor = conn.cursor()
-        
-        # Get assigned tickets count
-        cursor.execute("""
-            SELECT assigned_to, COUNT(*) as assigned
-            FROM tickets
-            WHERE assigned_to IS NOT NULL AND status NOT IN ('Closed', 'Resolved')
-            GROUP BY assigned_to
-        """)
-        assigned = dict(cursor.fetchall())
-        
-        # Get resolved tickets count
-        cursor.execute("""
-            SELECT assigned_to, COUNT(*) as resolved
-            FROM tickets
-            WHERE assigned_to IS NOT NULL AND status = 'Resolved'
-            GROUP BY assigned_to
-        """)
-        resolved = dict(cursor.fetchall())
-        
-        # FIXED: Changed from support_staff to users table
-        cursor.execute("""
-            SELECT email, name, role 
-            FROM users 
-            WHERE role = 'helper' AND is_active = 1
-        """)
-        staff_rows = cursor.fetchall()
-        
-        conn.close()
-        
-        performance = []
-        for email, name, role in staff_rows:
-            performance.append({
-                "email": email,
-                "name": name,
-                "role": role,
-                "active_tickets": assigned.get(email, 0),
-                "resolved_tickets": resolved.get(email, 0),
-                "total_handled": assigned.get(email, 0) + resolved.get(email, 0)
-            })
-        
-        # Sort by total handled (descending)
-        performance.sort(key=lambda x: x["total_handled"], reverse=True)
-        
-        return performance
-    except Exception as e:
-        logger.error(f"Error getting staff performance: {e}", exc_info=True)
-        return []
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            assigned_to AS email,
+            COUNT(*) AS total_handled,
+            SUM(CASE WHEN status NOT IN ('Resolved', 'Closed') THEN 1 ELSE 0 END) AS active_tickets
+        FROM tickets
+        WHERE assigned_to IS NOT NULL
+        GROUP BY assigned_to
+    """)
+
+    ticket_rows = cursor.fetchall()
+
+    cursor.execute("""
+        SELECT email, name, role
+        FROM users
+        WHERE role = 'helper' AND is_active = 1
+    """)
+    helpers = cursor.fetchall()
+
+    conn.close()
+
+    ticket_map = {
+        email: {
+            "active_tickets": active or 0,
+            "total_handled": total or 0
+        }
+        for email, total, active in ticket_rows
+    }
+
+    performance = []
+    for email, name, role in helpers:
+        stats = ticket_map.get(email, {})
+        performance.append({
+            "email": email,
+            "name": name,
+            "role": role,
+            "active_tickets": stats.get("active_tickets", 0),
+            "total_handled": stats.get("total_handled", 0)
+        })
+
+    performance.sort(key=lambda x: x["total_handled"], reverse=True)
+    return performance
+
 
 
 # ==========================================
