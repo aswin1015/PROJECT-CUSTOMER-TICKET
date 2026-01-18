@@ -9,8 +9,8 @@ logger = logging.getLogger(__name__)
 
 DATABASE_NAME = "tickets.db"
 
+# GLOBAL DB LOCK (CRITICAL FOR SQLITE)
 db_lock = Lock()
-
 
 # -------------------- MODELS --------------------
 
@@ -56,9 +56,6 @@ class Ticket:
             "closed_at": self.closed_at,
         }
 
-    def __repr__(self):
-        return f"Ticket(id={self.id}, title={self.title}, status={self.status})"
-
 
 class Comment:
     def __init__(self, id, ticket_id, author, comment, is_internal, created_at):
@@ -86,8 +83,7 @@ def get_connection():
     return sqlite3.connect(
         DATABASE_NAME,
         timeout=30,
-        check_same_thread=False,
-        isolation_level=None
+        check_same_thread=False
     )
 
 
@@ -97,6 +93,7 @@ def init_database():
     with get_connection() as conn:
         cursor = conn.cursor()
 
+        # WAL MODE + TIMEOUT (FIXES LOCKING)
         cursor.execute("PRAGMA journal_mode=WAL;")
         cursor.execute("PRAGMA synchronous=NORMAL;")
         cursor.execute("PRAGMA busy_timeout = 30000;")
@@ -125,8 +122,7 @@ def init_database():
             old_value TEXT,
             new_value TEXT,
             changed_by TEXT,
-            changed_at TEXT NOT NULL,
-            FOREIGN KEY (ticket_id) REFERENCES tickets(id)
+            changed_at TEXT NOT NULL
         )
         """)
 
@@ -137,17 +133,9 @@ def init_database():
             author TEXT NOT NULL,
             comment TEXT NOT NULL,
             is_internal INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (ticket_id) REFERENCES tickets(id)
+            created_at TEXT NOT NULL
         )
         """)
-
-        # Create indexes for performance
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_assigned ON tickets(assigned_to)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_created_by ON tickets(created_by)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_comments_ticket ON comments(ticket_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_history_ticket ON ticket_history(ticket_id)")
 
         conn.commit()
         logger.info("Database initialized successfully")
@@ -155,14 +143,7 @@ def init_database():
 
 # -------------------- HISTORY --------------------
 
-def log_ticket_history(
-    cursor,
-    ticket_id,
-    field,
-    old_value,
-    new_value,
-    changed_by
-):
+def log_ticket_history(cursor, ticket_id, field, old, new, changed_by):
     cursor.execute(
         """
         INSERT INTO ticket_history
@@ -172,8 +153,8 @@ def log_ticket_history(
         (
             ticket_id,
             field,
-            old_value,
-            new_value,
+            old,
+            new,
             changed_by,
             datetime.now().isoformat()
         )
@@ -186,278 +167,163 @@ VALID_PRIORITIES = ["Low", "Medium", "High", "Critical"]
 VALID_STATUSES = ["Open", "In Progress", "Resolved", "Closed", "On Hold"]
 
 
-def create_ticket(
-    title,
-    description,
-    priority="Medium",
-    created_by=None
-):
-    # Validation
-    if not title or len(title.strip()) == 0:
+def create_ticket(title, description, priority="Medium", created_by=None):
+    if not title.strip():
         raise ValueError("Title cannot be empty")
-    
     if priority not in VALID_PRIORITIES:
-        raise ValueError(f"Invalid priority. Must be one of {VALID_PRIORITIES}")
+        raise ValueError("Invalid priority")
 
     with db_lock:
         conn = get_connection()
-        cursor = conn.cursor()
-
         try:
+            cursor = conn.cursor()
             now = datetime.now().isoformat()
 
             cursor.execute("""
-            INSERT INTO tickets
-            (title, description, priority, status, assigned_to, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                title.strip(),
-                description,
-                priority,
-                "Open",
-                None,
-                created_by,
-                now,
-                now
-            ))
+                INSERT INTO tickets
+                (title, description, priority, status, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, 'Open', ?, ?, ?)
+            """, (title, description, priority, created_by, now, now))
 
             ticket_id = cursor.lastrowid
-
-            log_ticket_history(
-                cursor,
-                ticket_id,
-                "created",
-                None,
-                "Open",
-                created_by or "System"
-            )
-
+            log_ticket_history(cursor, ticket_id, "created", None, "Open", created_by)
             conn.commit()
-            logger.info(f"Created ticket #{ticket_id}")
-            return get_ticket(ticket_id)
 
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Error creating ticket: {e}", exc_info=True)
-            raise
+            return get_ticket(ticket_id)
         finally:
             conn.close()
 
 
-def update_ticket(
-    ticket_id,
-    status=None,
-    assigned_to=None,
-    changed_by=None
-):
-    # Validation
-    if status and status not in VALID_STATUSES:
-        raise ValueError(f"Invalid status. Must be one of {VALID_STATUSES}")
-
+def update_ticket(ticket_id, status=None, assigned_to=None, changed_by=None):
     with db_lock:
         conn = get_connection()
-        cursor = conn.cursor()
-
         try:
+            cursor = conn.cursor()
             ticket = get_ticket(ticket_id)
             if not ticket:
                 raise ValueError("Ticket not found")
 
-            updates = {}
             now = datetime.now().isoformat()
 
-            if status and status != ticket.status:
-                updates["status"] = (ticket.status, status)
+            if status:
+                update_fields = ["status = ?", "updated_at = ?"]
+                update_values = [status, now]
 
-            if assigned_to is not None and assigned_to != ticket.assigned_to:
-                updates["assigned_to"] = (ticket.assigned_to, assigned_to)
+                # Handle status transitions
+                if status == "Resolved" and ticket.resolved_at is None:
+                    update_fields.append("resolved_at = ?")
+                    update_values.append(now)
 
-            for field, (old, new) in updates.items():
+                if status == "Closed" and ticket.closed_at is None:
+                    update_fields.append("closed_at = ?")
+                    update_values.append(now)
+
+                update_values.append(ticket_id)
+
                 cursor.execute(
-                    f"UPDATE tickets SET {field}=?, updated_at=? WHERE id=?",
-                    (new, now, ticket_id)
+                    f"UPDATE tickets SET {', '.join(update_fields)} WHERE id = ?",
+                    tuple(update_values)
                 )
 
                 log_ticket_history(
-                    cursor,
-                    ticket_id,
-                    field,
-                    str(old) if old else None,
-                    str(new) if new else None,
-                    changed_by or "System"
-                )
+                cursor,
+                ticket_id,
+                "status",
+                ticket.status,
+                status,
+                changed_by
+            )
 
-            # Set resolved_at when status changes to Resolved
-            if status == "Resolved" and ticket.status != "Resolved":
+            if assigned_to is not None:
                 cursor.execute(
-                    "UPDATE tickets SET resolved_at=? WHERE id=?",
-                    (now, ticket_id)
+                    "UPDATE tickets SET assigned_to=?, updated_at=? WHERE id=?",
+                    (assigned_to, now, ticket_id)
                 )
-                logger.info(f"Ticket #{ticket_id} resolved at {now}")
-
-            # Set closed_at when status changes to Closed
-            if status == "Closed" and ticket.status != "Closed":
-                cursor.execute(
-                    "UPDATE tickets SET closed_at=? WHERE id=?",
-                    (now, ticket_id)
-                )
-                logger.info(f"Ticket #{ticket_id} closed at {now}")
+                log_ticket_history(cursor, ticket_id, "assigned_to", ticket.assigned_to, assigned_to, changed_by)
 
             conn.commit()
             return get_ticket(ticket_id)
-
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Error updating ticket: {e}", exc_info=True)
-            raise
         finally:
             conn.close()
 
 
 def get_ticket(ticket_id) -> Optional[Ticket]:
     conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,))
-    row = cursor.fetchone()
-    conn.close()
-
-    if not row:
-        return None
-
-    return Ticket(*row)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,))
+        row = cursor.fetchone()
+        return Ticket(*row) if row else None
+    finally:
+        conn.close()
 
 
 def get_all_tickets(**filters) -> List[Ticket]:
     conn = get_connection()
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
+        query = "SELECT * FROM tickets"
+        values = []
 
-    query = "SELECT * FROM tickets"
-    values = []
-
-    if filters:
-        conditions = []
-        for k, v in filters.items():
-            # Whitelist allowed filter fields
-            if k in ['status', 'priority', 'assigned_to', 'created_by']:
-                conditions.append(f"{k}=?")
+        if filters:
+            clauses = []
+            for k, v in filters.items():
+                clauses.append(f"{k}=?")
                 values.append(v)
-        
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
+            query += " WHERE " + " AND ".join(clauses)
 
-    query += " ORDER BY created_at DESC"
-
-    cursor.execute(query, values)
-    rows = cursor.fetchall()
-    conn.close()
-
-    return [Ticket(*row) for row in rows]
+        cursor.execute(query, values)
+        return [Ticket(*row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
 
 
 def delete_ticket(ticket_id: int) -> bool:
-    conn = None
-    try:
-        with db_lock:
-            conn = get_connection()
+    with db_lock:
+        conn = get_connection()
+        try:
             cursor = conn.cursor()
-
-            # Check if ticket exists
-            cursor.execute("SELECT id FROM tickets WHERE id=?", (ticket_id,))
-            if not cursor.fetchone():
-                return False
-
-            # Delete related data first (important for integrity)
             cursor.execute("DELETE FROM comments WHERE ticket_id=?", (ticket_id,))
             cursor.execute("DELETE FROM ticket_history WHERE ticket_id=?", (ticket_id,))
             cursor.execute("DELETE FROM tickets WHERE id=?", (ticket_id,))
-
             conn.commit()
-            logger.info(f"Deleted ticket #{ticket_id}")
-            return True
-
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        logger.error(f"Error deleting ticket: {e}", exc_info=True)
-        raise
-
-    finally:
-        if conn:
+            return cursor.rowcount > 0
+        finally:
             conn.close()
 
 
 # -------------------- COMMENTS --------------------
 
 def add_comment(ticket_id, author, comment, is_internal=False):
-    # Validation
-    if not comment or len(comment.strip()) == 0:
+    if not comment.strip():
         raise ValueError("Comment cannot be empty")
-
-    # Check if ticket exists
-    if not get_ticket(ticket_id):
-        raise ValueError(f"Ticket #{ticket_id} not found")
 
     with db_lock:
         conn = get_connection()
-        cursor = conn.cursor()
-
         try:
+            cursor = conn.cursor()
             now = datetime.now().isoformat()
 
             cursor.execute("""
-            INSERT INTO comments
-            (ticket_id, author, comment, is_internal, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """, (
-                ticket_id,
-                author,
-                comment.strip(),
-                int(is_internal),
-                now
-            ))
+                INSERT INTO comments
+                (ticket_id, author, comment, is_internal, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (ticket_id, author, comment, int(is_internal), now))
 
-            comment_id = cursor.lastrowid
             conn.commit()
-            logger.info(f"Added comment to ticket #{ticket_id}")
-
-            return Comment(
-                comment_id,
-                ticket_id,
-                author,
-                comment.strip(),
-                is_internal,
-                now
-            )
-
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Error adding comment: {e}", exc_info=True)
-            raise
+            return Comment(cursor.lastrowid, ticket_id, author, comment, is_internal, now)
         finally:
             conn.close()
 
 
 def get_ticket_comments(ticket_id, include_internal=False):
     conn = get_connection()
-    cursor = conn.cursor()
-
-    if include_internal:
-        cursor.execute("""
-        SELECT id, ticket_id, author, comment, is_internal, created_at
-        FROM comments
-        WHERE ticket_id=?
-        ORDER BY created_at ASC
-        """, (ticket_id,))
-    else:
-        cursor.execute("""
-        SELECT id, ticket_id, author, comment, is_internal, created_at
-        FROM comments
-        WHERE ticket_id=? AND is_internal=0
-        ORDER BY created_at ASC
-        """, (ticket_id,))
-
-    rows = cursor.fetchall()
-    conn.close()
-
-    return [Comment(*row) for row in rows]
+    try:
+        cursor = conn.cursor()
+        if include_internal:
+            cursor.execute("SELECT * FROM comments WHERE ticket_id=?", (ticket_id,))
+        else:
+            cursor.execute("SELECT * FROM comments WHERE ticket_id=? AND is_internal=0", (ticket_id,))
+        return [Comment(*row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
