@@ -179,7 +179,6 @@ class StaffPerformance(BaseModel):
     name: str
     role: str
     active_tickets: int
-    resolved_tickets: int
     total_handled: int
 
 
