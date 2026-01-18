@@ -1,10 +1,22 @@
 """
 Permission system to control what each role can do
 """
-
-from users import get_user_by_email, ROLE_CUSTOMER, ROLE_HELPER, ROLE_ADMIN
-from database import get_ticket, get_all_tickets, update_ticket
 import logging
+
+from users import (
+    get_user_by_email,
+    ROLE_CUSTOMER,
+    ROLE_HELPER,
+    ROLE_ADMIN,
+)
+from database import (
+    get_ticket,
+    get_all_tickets,
+    update_ticket,
+)
+
+logger = logging.getLogger(__name__)
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -140,42 +152,42 @@ def can_assign_ticket(user_email: str) -> bool:
 
 
 def can_add_comment(user_email: str, ticket_id: int) -> bool:
-    """
-    - Customer: Can comment on their own tickets
-    - Helper: Can comment on assigned tickets
-    - Admin: Can comment on all tickets
-    """
     user = get_user_by_email(user_email)
     if not user or not user.is_active:
         return False
-    
+
     ticket = get_ticket(ticket_id)
     if not ticket:
         return False
-    
-    # Admin can comment on all
+
     if user.role == ROLE_ADMIN:
         return True
-    
-    # Helper can comment on assigned tickets
+
     if user.role == ROLE_HELPER:
         return ticket.assigned_to == user_email
-    
-    # Customer can comment on their own tickets
+
     if user.role == ROLE_CUSTOMER:
         return ticket.created_by == user_email
-    
+
     return False
 
 
-def can_add_internal_comment(user_email: str) -> bool:
-    """
-    - Customer: No (cannot add internal notes)
-    - Helper: Yes
-    - Admin: Yes
-    """
+def can_add_internal_comment(user_email: str, ticket_id: int) -> bool:
     user = get_user_by_email(user_email)
-    return user and user.role in [ROLE_HELPER, ROLE_ADMIN] and user.is_active
+    if not user or not user.is_active:
+        return False
+
+    ticket = get_ticket(ticket_id)
+    if not ticket:
+        return False
+
+    if user.role == ROLE_ADMIN:
+        return True
+
+    if user.role == ROLE_HELPER:
+        return ticket.assigned_to == user_email
+
+    return False
 
 
 def can_view_internal_comments(user_email: str) -> bool:
